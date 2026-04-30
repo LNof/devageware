@@ -1,0 +1,7 @@
+langchain-groq
+langchain-core
+python-dotenv
+notion-client
+requests
+gitpython
+platformio
