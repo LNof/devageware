@@ -88,7 +88,12 @@ def build_platformio_project(project: FirmwareProject, project_dir: str) -> tupl
     """Build a PlatformIO/Arduino project."""
     # quote the project dir to handle spaces
     import shlex
-    
+    project_dir = os.path.abspath(project_dir)
+
+    print(f"\n🔨 Building PlatformIO project: {project.name}")
+    print(f"   Board: {project.platform.board}")
+    print(f"   Project dir: {project_dir}")
+
     pio_bin = shutil.which("pio") or shutil.which("platformio")
     if not pio_bin:
         return False, "PlatformIO not found — run: pip install platformio"

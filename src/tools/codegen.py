@@ -33,12 +33,18 @@ def parse_firmware_json(json_str: str) -> FirmwareProject:
 
     # parse platform
     platform_data = data.get("platform", {})
+
+    # normalise toolchain first
+    toolchain = platform_data.get("toolchain", "unknown").lower()
+    if toolchain in ["arduino", "arduino/platformio"]:
+        toolchain = "platformio"
+
     platform = Platform(
         name=platform_data.get("name", "Unknown"),
         vendor=platform_data.get("vendor", "Unknown"),
         mcu=platform_data.get("mcu", "Unknown"),
-        toolchain=platform_data.get("toolchain", "unknown"),
-        language=platform_data.get("language", "c"),
+        toolchain=toolchain,
+        language=platform_data.get("language", "cpp"),
         board=platform_data.get("board", None)
     )
 
@@ -47,10 +53,6 @@ def parse_firmware_json(json_str: str) -> FirmwareProject:
         platform.toolchain_path = os.getenv("NCS_TOOLCHAIN_PATH")
         platform.sdk_path = os.getenv("NCS_SDK_PATH", "/home/LoayN/ncs/v3.2.4")
 
-    # normalise toolchain names
-    if platform.toolchain in ["arduino", "arduino/platformio"]:
-        platform.toolchain = "platformio"
-    
     # parse project info
     project_data = data.get("project", {})
     project = FirmwareProject(
@@ -62,28 +64,41 @@ def parse_firmware_json(json_str: str) -> FirmwareProject:
 
     # parse files
     files = data.get("files", {})
-
     print(f"  🔍 File keys: {list(files.keys())}")
     for k, v in files.items():
         print(f"  🔍 {k}: {len(v) if v else 0} chars")
-
 
     project.cmakelists = files.get("CMakeLists.txt", "")
     project.prj_conf = files.get("prj.conf", "")
     project.platformio_ini = files.get("platformio.ini", "")
 
-    # main source file
+    # find main source file
     ext = "cpp" if platform.language == "cpp" else "c"
-    project.main_c = files.get(f"src/main.{ext}", files.get("src/main.c", ""))
+    project.main_c = (
+        files.get(f"src/main.{ext}") or
+        files.get("src/main.cpp") or
+        files.get("src/main.c") or
+        files.get("main.cpp") or
+        files.get("main.c") or
+        ""
+    )
 
-    # parse modules
-    for mod in data.get("modules", []):
-        project.modules.append(FirmwareModule(
-            name=mod.get("name", ""),
-            filename=mod.get("filename", ""),
-            description=mod.get("description", ""),
-            code=mod.get("code", "")
-        ))
+    # parse all remaining files as modules
+    skip_keys = {
+        "CMakeLists.txt", "prj.conf", "platformio.ini",
+        f"src/main.{ext}", "src/main.cpp", "src/main.c",
+        "main.cpp", "main.c"
+    }
+
+    for filename, code in files.items():
+        if filename not in skip_keys and code:
+            base_filename = filename.split("/")[-1]
+            project.modules.append(FirmwareModule(
+                name=base_filename.split(".")[0],
+                filename=base_filename,
+                description=f"Module: {base_filename}",
+                code=code
+            ))
 
     return project
 
