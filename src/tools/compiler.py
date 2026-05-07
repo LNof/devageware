@@ -1,4 +1,3 @@
-
 import os
 import subprocess
 import shutil
@@ -87,7 +86,6 @@ def build_ncs_project(project: FirmwareProject, project_dir: str) -> tuple[bool,
 def build_platformio_project(project: FirmwareProject, project_dir: str) -> tuple[bool, str]:
     """Build a PlatformIO/Arduino project."""
     # quote the project dir to handle spaces
-    import shlex
     project_dir = os.path.abspath(project_dir)
 
     print(f"\n🔨 Building PlatformIO project: {project.name}")

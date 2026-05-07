@@ -56,6 +56,11 @@ When identifying the platform ask about:
 # ESP32 → board = esp32dev, platform = espressif32
 # ESP32-S3 → board = esp32-s3-devkitc-1, platform = espressif32
 ## CRITICAL: never use generic names like "Arduino Every" — always use exact PlatformIO board IDs
+## Example of correct platformio.ini:
+# [env:nano_every]
+# platform = atmelmegaavr
+# board = nano_every
+# framework = arduino 
 
 ## Output Format
 When you have enough information to generate code output a JSON block:

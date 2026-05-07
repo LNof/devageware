@@ -121,13 +121,14 @@ def list_artifacts(vendor: str = None, mcu: str = None) -> list[dict]:
         return []
 
 def upload_all_artifacts(project: FirmwareProject) -> dict:
-    """Upload all build artifacts to Nexus."""
     print(f"\n🗄️ Uploading artifacts to Nexus...")
     results = {
-        "bin": upload_binary(project),
         "hex": upload_hex(project),
         "log": upload_build_log(project)
     }
+    # only upload bin if it exists
+    if project.bin_path:
+        results["bin"] = upload_binary(project)
 
     successful = sum(1 for v in results.values() if v)
     print(f"\n  📊 Uploaded {successful}/{len(results)} artifacts")

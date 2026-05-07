@@ -3,7 +3,7 @@ import json
 import os
 from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage, SystemMessage
-from dotenv import load_dotenv
+from dotenv import load_dotenv, version
 from src.models import FirmwareProject, FirmwareModule, Platform
 
 load_dotenv()
@@ -38,13 +38,16 @@ def parse_firmware_json(json_str: str) -> FirmwareProject:
     toolchain = platform_data.get("toolchain", "unknown").lower()
     if toolchain in ["arduino", "arduino/platformio"]:
         toolchain = "platformio"
+    
+    if toolchain=="platformio":
+        language = "cpp"
 
     platform = Platform(
         name=platform_data.get("name", "Unknown"),
         vendor=platform_data.get("vendor", "Unknown"),
         mcu=platform_data.get("mcu", "Unknown"),
         toolchain=toolchain,
-        language=platform_data.get("language", "cpp"),
+        language=language,
         board=platform_data.get("board", None)
     )
 
@@ -55,9 +58,13 @@ def parse_firmware_json(json_str: str) -> FirmwareProject:
 
     # parse project info
     project_data = data.get("project", {})
+
+    version = project_data.get("version", "0.1.0")
+    version = version.lstrip("v")  # remove leading 'v' if present
+
     project = FirmwareProject(
         name=project_data.get("name", "firmware"),
-        version=project_data.get("version", "0.1.0"),
+        version=version,
         description=project_data.get("description", ""),
         platform=platform
     )
@@ -107,6 +114,12 @@ def save_project_to_disk(project: FirmwareProject, output_dir: str = "output") -
     # replace spaces with underscores to avoid path issues
     safe_name = project.name.replace(" ", "_")
     project_dir = os.path.join(output_dir, safe_name)
+
+    # clean previous build
+    if os.path.exists(project_dir):
+        import shutil
+        shutil.rmtree(project_dir)
+
     os.makedirs(project_dir, exist_ok=True)
 
     # write all files
