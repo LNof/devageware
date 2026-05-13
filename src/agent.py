@@ -12,9 +12,10 @@ from src.tools.codegen import (
     save_project_to_disk,
     generate_documentation
 )
-from src.tools.compiler import compile_project
+from src.tools.compiler import compile_project, image_for
 from src.tools.git import init_and_push
 from src.tools.nexus import upload_all_artifacts
+from src import pipeline_state
 
 load_dotenv()
 
@@ -141,7 +142,7 @@ def generate_and_deploy(messages: list) -> FirmwareProject | None:
 
             # save to disk
             print(f"\n💾 Saving project files...")
-            project_dir = save_project_to_disk(project, output_dir="output")
+            project_dir = os.path.abspath(save_project_to_disk(project, output_dir="output"))
             print(f"  ✅ Saved to: {project_dir}")
 
             # compile
@@ -177,6 +178,19 @@ def generate_and_deploy(messages: list) -> FirmwareProject | None:
             except Exception as e:
                 print(f"  ⚠️ Notion documentation failed: {str(e)}")
 
+            if success:
+                pipeline_state.update(
+                    project_name=project.name,
+                    vendor=project.platform.vendor,
+                    mcu=project.platform.mcu,
+                    toolchain=project.platform.toolchain,
+                    version=project.version,
+                    project_dir=project_dir,
+                    container_image=image_for(project.platform),
+                )
+                if pipeline_state.in_pipeline():
+                    print(f"🔗 Pipeline handoff: {project.name} v{project.version}")
+
             return project
 
         except Exception as e:
@@ -201,20 +215,31 @@ def run_agent():
 
     print(f"\n🤖 {WELCOME_MESSAGE}\n")
 
-    # ask if they want to load from notion
-    choice = input("You: ").strip()
-    messages.append(HumanMessage(content=choice))
+    # in pipeline mode, auto-load the Notion page Prodgento handed off
+    handoff_page_id = pipeline_state.load().get("notion_page_id")
+    if handoff_page_id:
+        print(f"🔗 Pipeline handoff: loading Notion page {handoff_page_id}\n")
+        context = load_requirements_context(handoff_page_id)
+        if context:
+            messages.append(HumanMessage(content=context))
+            response = llm.invoke(messages)
+            messages.append(AIMessage(content=response.content))
+            print(f"\n🤖 {response.content}\n")
+    else:
+        # ask if they want to load from notion
+        choice = input("You: ").strip()
+        messages.append(HumanMessage(content=choice))
 
-    # if they want notion requirements
-    if any(word in choice.lower() for word in ["notion", "requirements", "1", "read", "load"]):
-        page_id = select_requirements_from_notion()
-        if page_id:
-            context = load_requirements_context(page_id)
-            if context:
-                messages.append(HumanMessage(content=context))
-                response = llm.invoke(messages)
-                messages.append(AIMessage(content=response.content))
-                print(f"\n🤖 {response.content}\n")
+        # if they want notion requirements
+        if any(word in choice.lower() for word in ["notion", "requirements", "1", "read", "load"]):
+            page_id = select_requirements_from_notion()
+            if page_id:
+                context = load_requirements_context(page_id)
+                if context:
+                    messages.append(HumanMessage(content=context))
+                    response = llm.invoke(messages)
+                    messages.append(AIMessage(content=response.content))
+                    print(f"\n🤖 {response.content}\n")
 
     # main conversation loop
     while True:

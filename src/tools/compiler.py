@@ -1,189 +1,184 @@
 import os
-import subprocess
 import shutil
+import subprocess
 from dotenv import load_dotenv
-from src.models import FirmwareProject
+from src.models import FirmwareProject, Platform
 
 load_dotenv()
 
-NCS_TOOLCHAIN_PATH = os.getenv("NCS_TOOLCHAIN_PATH", "/home/LoayN/ncs/toolchains/2ac5840438")
-NCS_SDK_PATH = os.getenv("NCS_SDK_PATH", "/home/LoayN/ncs/v3.2.4")
-NCS_WORKSPACE = os.getenv("NCS_WORKSPACE", "/home/LoayN/ncs-workspaces")
+NEXUS_DOCKER_REGISTRY = os.getenv("NEXUS_DOCKER_REGISTRY", "10.0.0.221:8082")
 
-def _run_command(cmd: list[str], cwd: str, env: dict = None) -> tuple[int, str, str]:
-    """Run a shell command and return exit code, stdout, stderr."""
-    print(f"  ▶ Running: {' '.join(cmd)}")
-    result = subprocess.run(
-        cmd,
-        cwd=cwd,
-        env=env or os.environ.copy(),
-        capture_output=True,
-        text=True
-    )
+# vendor/toolchain → image name (tag included)
+_IMAGE_MAP = {
+    "platformio": "arduino-toolchain:latest",
+    "arduino": "arduino-toolchain:latest",
+    "ncs": "ncs-toolchain:v3.2.4",
+    "mcuxpresso": "zephyr-toolchain:v4.3.0",
+    "zephyr": "zephyr-toolchain:v4.3.0",
+}
+
+
+def image_for(platform: Platform) -> str:
+    """Return the registry-qualified container image for this platform."""
+    key = (platform.toolchain or "").lower()
+    image = _IMAGE_MAP.get(key)
+    if not image:
+        raise ValueError(f"No toolchain container known for toolchain '{platform.toolchain}'")
+    return f"{NEXUS_DOCKER_REGISTRY}/{image}"
+
+
+def _run(cmd: list[str], cwd: str | None = None) -> tuple[int, str, str]:
+    print(f"  ▶ {' '.join(cmd)}")
+    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     return result.returncode, result.stdout, result.stderr
 
-def _get_ncs_environment() -> dict:
-    """Get the environment variables needed for NCS builds."""
-    env = os.environ.copy()
-    
-    # add NCS toolchain to PATH
-    toolchain_bin = os.path.join(NCS_TOOLCHAIN_PATH, "usr", "local", "bin")
-    toolchain_sbin = os.path.join(NCS_TOOLCHAIN_PATH, "usr", "bin")
-    env["PATH"] = f"{toolchain_bin}:{toolchain_sbin}:{env.get('PATH', '')}"
-    
-    # set Zephyr base
-    env["ZEPHYR_BASE"] = os.path.join(NCS_SDK_PATH, "zephyr")
-    
-    # set NCS toolchain
-    env["ZEPHYR_TOOLCHAIN_VARIANT"] = "gnuarmemb"
-    env["GNUARMEMB_TOOLCHAIN_PATH"] = NCS_TOOLCHAIN_PATH
-    
-    return env
 
-def build_ncs_project(project: FirmwareProject, project_dir: str) -> tuple[bool, str]:
-    """Build an NCS/Zephyr project using west."""
-    print(f"\n🔨 Building NCS project: {project.name}")
-    print(f"   Board: {project.platform.board}")
-    print(f"   Project dir: {project_dir}")
+def _require_docker() -> None:
+    if not shutil.which("docker"):
+        raise RuntimeError("docker not found on PATH — install docker before running the build")
 
-    build_dir = os.path.join(project_dir, "build")
-    env = _get_ncs_environment()
-    west_bin = os.path.join(NCS_TOOLCHAIN_PATH, "usr", "local", "bin", "west")
 
-    # clean previous build
-    if os.path.exists(build_dir):
-        shutil.rmtree(build_dir)
+def _docker_pull(image: str) -> tuple[bool, str]:
+    print(f"\n📦 Pulling toolchain container: {image}")
+    rc, out, err = _run(["docker", "pull", image])
+    if rc == 0:
+        return True, out
+    return False, err or out
 
-    # run west build
+
+def _docker_build(image: str, project_dir: str, build_cmd: str) -> tuple[int, str, str]:
+    """Run build_cmd inside the container with project_dir mounted at /workspace.
+
+    Runs the command as root (container default) then chowns the workspace back
+    to the host user so the host can clean it up between runs.
+    """
+    uid = os.getuid()
+    gid = os.getgid()
+    wrapped = f"{build_cmd}; rc=$?; chown -R {uid}:{gid} /workspace; exit $rc"
     cmd = [
-        west_bin, "build",
-        "-b", project.platform.board or "nrf54l15dk",
-        "--build-dir", build_dir,
-        project_dir
+        "docker", "run", "--rm",
+        "-v", f"{project_dir}:/workspace",
+        "-w", "/workspace",
+        image,
+        "bash", "-lc", wrapped,
     ]
+    return _run(cmd)
 
-    returncode, stdout, stderr = _run_command(cmd, cwd=project_dir, env=env)
-
-    build_log = f"STDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
-
-    if returncode == 0:
-        print("  ✅ Build successful!")
-        # find the .bin and .hex files
-        bin_path = _find_build_artifact(build_dir, ".bin")
-        hex_path = _find_build_artifact(build_dir, ".hex")
-        project.bin_path = bin_path
-        project.hex_path = hex_path
-        project.build_success = True
-        project.build_log = build_log
-        return True, build_log
-    else:
-        print(f"  ❌ Build failed!")
-        print(f"  {stderr[:500]}")
-        project.build_success = False
-        project.build_log = build_log
-        return False, build_log
 
 def build_platformio_project(project: FirmwareProject, project_dir: str) -> tuple[bool, str]:
-    """Build a PlatformIO/Arduino project."""
-    # quote the project dir to handle spaces
     project_dir = os.path.abspath(project_dir)
-
+    image = image_for(project.platform)
     print(f"\n🔨 Building PlatformIO project: {project.name}")
     print(f"   Board: {project.platform.board}")
     print(f"   Project dir: {project_dir}")
 
-    pio_bin = shutil.which("pio") or shutil.which("platformio")
-    if not pio_bin:
-        return False, "PlatformIO not found — run: pip install platformio"
+    _require_docker()
+    ok, pull_log = _docker_pull(image)
+    if not ok:
+        return False, f"docker pull failed:\n{pull_log}"
 
-    cmd = [pio_bin, "run", "--project-dir", project_dir]
-    returncode, stdout, stderr = _run_command(cmd, cwd=project_dir)
+    rc, out, err = _docker_build(image, project_dir, "pio run --project-dir /workspace")
+    build_log = f"STDOUT:\n{out}\n\nSTDERR:\n{err}"
 
-    build_log = f"STDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
-
-    if returncode == 0:
+    if rc == 0:
         print("  ✅ Build successful!")
-        # find .bin in .pio/build directory
-        bin_path = _find_build_artifact(
-            os.path.join(project_dir, ".pio", "build"),
-            ".bin"
-        )
-        hex_path = _find_build_artifact(
-            os.path.join(project_dir, ".pio", "build"),
-            ".hex"
-        )
-        project.bin_path = bin_path
-        project.hex_path = hex_path
+        project.bin_path = _find_build_artifact(os.path.join(project_dir, ".pio", "build"), ".bin")
+        project.hex_path = _find_build_artifact(os.path.join(project_dir, ".pio", "build"), ".hex")
         project.build_success = True
         project.build_log = build_log
         return True, build_log
-    else:
-        print(f"  ❌ Build failed!")
-        print(f"  {stderr[:500]}")
-        project.build_success = False
-        project.build_log = build_log
-        return False, build_log
 
-def build_mcuxpresso_project(project: FirmwareProject, project_dir: str) -> tuple[bool, str]:
-    """Build an NXP MCUXpresso project using CMake and Ninja."""
-    print(f"\n🔨 Building MCUXpresso project: {project.name}")
-    print(f"   MCU: {project.platform.mcu}")
+    print(f"  ❌ Build failed!")
+    print(f"  {err[:500]}")
+    project.build_success = False
+    project.build_log = build_log
+    return False, build_log
+
+
+def build_ncs_project(project: FirmwareProject, project_dir: str) -> tuple[bool, str]:
+    project_dir = os.path.abspath(project_dir)
+    image = image_for(project.platform)
+    board = project.platform.board or "nrf54l15dk"
+    print(f"\n🔨 Building NCS project: {project.name}")
+    print(f"   Board: {board}")
     print(f"   Project dir: {project_dir}")
 
-    build_dir = os.path.join(project_dir, "build")
-    os.makedirs(build_dir, exist_ok=True)
+    _require_docker()
+    ok, pull_log = _docker_pull(image)
+    if not ok:
+        return False, f"docker pull failed:\n{pull_log}"
 
-    # cmake configure
-    cmake_cmd = [
-        "cmake", "..",
-        "-G", "Ninja",
-        "-DCMAKE_TOOLCHAIN_FILE=arm-none-eabi.cmake"
-    ]
-    returncode, stdout, stderr = _run_command(cmake_cmd, cwd=build_dir)
+    build_cmd = f"west build -b {board} --build-dir /workspace/build /workspace"
+    rc, out, err = _docker_build(image, project_dir, build_cmd)
+    build_log = f"STDOUT:\n{out}\n\nSTDERR:\n{err}"
 
-    if returncode != 0:
-        build_log = f"CMake configure failed:\n{stderr}"
-        project.build_success = False
-        project.build_log = build_log
-        return False, build_log
-
-    # ninja build
-    ninja_cmd = ["ninja"]
-    returncode, stdout, stderr = _run_command(ninja_cmd, cwd=build_dir)
-    build_log = f"STDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
-
-    if returncode == 0:
+    if rc == 0:
         print("  ✅ Build successful!")
-        bin_path = _find_build_artifact(build_dir, ".bin")
-        hex_path = _find_build_artifact(build_dir, ".hex")
-        project.bin_path = bin_path
-        project.hex_path = hex_path
+        build_dir = os.path.join(project_dir, "build")
+        project.bin_path = _find_build_artifact(build_dir, ".bin")
+        project.hex_path = _find_build_artifact(build_dir, ".hex")
         project.build_success = True
         project.build_log = build_log
         return True, build_log
-    else:
-        print(f"  ❌ Build failed!")
-        project.build_success = False
+
+    print(f"  ❌ Build failed!")
+    print(f"  {err[:500]}")
+    project.build_success = False
+    project.build_log = build_log
+    return False, build_log
+
+
+def build_mcuxpresso_project(project: FirmwareProject, project_dir: str) -> tuple[bool, str]:
+    """Build an NXP/Zephyr project using the zephyr-toolchain container."""
+    project_dir = os.path.abspath(project_dir)
+    image = image_for(project.platform)
+    board = project.platform.board or "mimxrt1062_evk"
+    print(f"\n🔨 Building Zephyr project: {project.name}")
+    print(f"   Board: {board}")
+    print(f"   Project dir: {project_dir}")
+
+    _require_docker()
+    ok, pull_log = _docker_pull(image)
+    if not ok:
+        return False, f"docker pull failed:\n{pull_log}"
+
+    build_cmd = f"west build -b {board} --build-dir /workspace/build /workspace"
+    rc, out, err = _docker_build(image, project_dir, build_cmd)
+    build_log = f"STDOUT:\n{out}\n\nSTDERR:\n{err}"
+
+    if rc == 0:
+        print("  ✅ Build successful!")
+        build_dir = os.path.join(project_dir, "build")
+        project.bin_path = _find_build_artifact(build_dir, ".bin")
+        project.hex_path = _find_build_artifact(build_dir, ".hex")
+        project.build_success = True
         project.build_log = build_log
-        return False, build_log
+        return True, build_log
+
+    print(f"  ❌ Build failed!")
+    print(f"  {err[:500]}")
+    project.build_success = False
+    project.build_log = build_log
+    return False, build_log
+
 
 def _find_build_artifact(build_dir: str, extension: str) -> str | None:
-    """Recursively find a build artifact by extension."""
-    for root, dirs, files in os.walk(build_dir):
+    if not os.path.isdir(build_dir):
+        return None
+    for root, _dirs, files in os.walk(build_dir):
         for file in files:
             if file.endswith(extension):
                 return os.path.join(root, file)
     return None
 
-def compile_project(project: FirmwareProject, project_dir: str) -> tuple[bool, str]:
-    """Compile the project using the appropriate toolchain."""
-    toolchain = project.platform.toolchain.lower() if project.platform else ""
 
-    if toolchain == "ncs":
+def compile_project(project: FirmwareProject, project_dir: str) -> tuple[bool, str]:
+    toolchain = (project.platform.toolchain or "").lower() if project.platform else ""
+
+    if toolchain in ("ncs",):
         return build_ncs_project(project, project_dir)
-    elif toolchain == "platformio":
+    if toolchain in ("platformio", "arduino"):
         return build_platformio_project(project, project_dir)
-    elif toolchain == "mcuxpresso":
+    if toolchain in ("mcuxpresso", "zephyr"):
         return build_mcuxpresso_project(project, project_dir)
-    else:
-        return False, f"Unknown toolchain: {toolchain}"
+    return False, f"Unknown toolchain: {toolchain}"
