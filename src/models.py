@@ -26,7 +26,8 @@ class FirmwareModule:
 @dataclass
 class FirmwareProject:
     # project info
-    name: str
+    name: str            # canonical display name, e.g. "PIP Controller"
+    slug: str = ""       # canonical slug, e.g. "PIP_Controller" (seeded by the pipeline launcher)
     version: str = "0.1.0"
     description: str = ""
     created_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M"))
@@ -52,6 +53,13 @@ class FirmwareProject:
     git_repo_url: Optional[str] = None
     nexus_artifact_url: Optional[str] = None
     notion_doc_url: Optional[str] = None
+
+    @property
+    def path_name(self) -> str:
+        """Filesystem / Nexus / Git-safe canonical name: the explicit slug if
+        seeded, else the display name with whitespace collapsed to underscores.
+        Kept identical to the launcher's _slug() rule so all systems agree."""
+        return self.slug or "_".join(self.name.split())
 
     def get_project_structure(self) -> dict:
         """Return the project file structure as a dict."""

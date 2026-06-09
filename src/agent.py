@@ -149,10 +149,41 @@ def generate_and_deploy(messages: list) -> FirmwareProject | None:
             print(f"\n🔨 Compiling firmware...")
             success, build_log = compile_project(project, project_dir)
 
+            # retry-on-build-failure: feed build log back to LLM, re-emit, re-compile
+            max_compile_attempts = 3
+            compile_attempt = 1
+            while not success and compile_attempt < max_compile_attempts:
+                compile_attempt += 1
+                print(f"\n🔁 Build failed — asking LLM to fix (attempt {compile_attempt}/{max_compile_attempts})...")
+                fix_messages = messages + [
+                    AIMessage(content=f"```json\n{json_str}\n```"),
+                    HumanMessage(content=(
+                        "The firmware you just emitted failed to compile. Build log (tail):\n\n"
+                        f"```\n{build_log[-3000:]}\n```\n\n"
+                        "Re-emit the FULL firmware project JSON with the compile errors fixed. "
+                        "Output a single JSON block with the same structure (platform, project, files). "
+                        "Do not truncate or use placeholders."
+                    ))
+                ]
+                try:
+                    fix_response = llm.invoke(fix_messages)
+                    new_json_str = extract_json_from_response(fix_response.content)
+                    if not new_json_str:
+                        print("  ⚠️ No JSON in retry response — giving up")
+                        break
+                    json_str = new_json_str
+                    project = parse_firmware_json(json_str)
+                    project_dir = os.path.abspath(save_project_to_disk(project, output_dir="output"))
+                    print(f"\n🔨 Re-compiling firmware...")
+                    success, build_log = compile_project(project, project_dir)
+                except Exception as retry_err:
+                    print(f"  ❌ Retry errored: {retry_err}")
+                    break
+
             if success:
-                print(f"  ✅ Compilation successful!")
+                print(f"  ✅ Compilation successful (after {compile_attempt} attempt{'s' if compile_attempt > 1 else ''})")
             else:
-                print(f"  ⚠️ Compilation failed — continuing with source code only")
+                print(f"  ⚠️ Compilation failed after {compile_attempt} attempts — continuing with source code only")
 
             # push to github
             print(f"\n📤 Pushing to GitHub...")
@@ -181,6 +212,7 @@ def generate_and_deploy(messages: list) -> FirmwareProject | None:
             if success:
                 pipeline_state.update(
                     project_name=project.name,
+                    project_slug=project.path_name,
                     vendor=project.platform.vendor,
                     mcu=project.platform.mcu,
                     toolchain=project.platform.toolchain,

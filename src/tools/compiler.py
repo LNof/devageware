@@ -43,7 +43,9 @@ def _docker_pull(image: str) -> tuple[bool, str]:
     rc, out, err = _run(["docker", "pull", image])
     if rc == 0:
         return True, out
-    return False, err or out
+    log = err or out
+    print(f"  ❌ docker pull failed (rc={rc}):\n{log.strip()}")
+    return False, log
 
 
 def _docker_build(image: str, project_dir: str, build_cmd: str) -> tuple[int, str, str]:

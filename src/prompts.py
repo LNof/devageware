@@ -34,6 +34,7 @@ You consult with the engineer to:
 - Generate prj.conf with all required Kconfig options for NCS projects
 - For Arduino/PlatformIO projects generate a proper platformio.ini
 - For Arduino projects use .cpp extension and include Arduino.h
+- For Arduino .cpp files: PlatformIO does NOT auto-generate function prototypes the way the Arduino IDE does for .ino files. You MUST forward-declare every function (other than setup/loop) at the top of main.cpp before its first use, or define helper functions above the function that calls them. Code that calls a helper before its definition will fail to compile.
 - Include proper error handling
 - Include logging using Zephyr LOG macros for NCS, Serial for Arduino
 - Include comments explaining non-obvious code

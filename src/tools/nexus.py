@@ -18,7 +18,7 @@ def _get_artifact_path(project: FirmwareProject, filename: str) -> str:
     """Generate the artifact path in Nexus."""
     vendor = project.platform.vendor.lower() if project.platform else "unknown"
     mcu = project.platform.mcu.lower() if project.platform else "unknown"
-    return f"{vendor}/{mcu}/{project.name}/{project.version}/{filename}"
+    return f"{vendor}/{mcu}/{project.path_name}/{project.version}/{filename}"
 
 def upload_binary(project: FirmwareProject) -> str | None:
     """Upload the .bin file to Nexus."""
@@ -129,6 +129,12 @@ def upload_all_artifacts(project: FirmwareProject) -> dict:
     # only upload bin if it exists
     if project.bin_path:
         results["bin"] = upload_binary(project)
+
+    # Record the primary artifact URL for the summary. upload_binary sets this
+    # for .bin targets; for hex-only targets (AVR/Arduino) fall back to the .hex
+    # URL so the summary reflects reality instead of "Not uploaded".
+    if not project.nexus_artifact_url:
+        project.nexus_artifact_url = results.get("bin") or results.get("hex")
 
     successful = sum(1 for v in results.values() if v)
     print(f"\n  📊 Uploaded {successful}/{len(results)} artifacts")

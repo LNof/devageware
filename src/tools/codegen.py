@@ -5,6 +5,7 @@ from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage, SystemMessage
 from dotenv import load_dotenv, version
 from src.models import FirmwareProject, FirmwareModule, Platform
+from src import pipeline_state
 
 load_dotenv()
 
@@ -38,9 +39,11 @@ def parse_firmware_json(json_str: str) -> FirmwareProject:
     toolchain = platform_data.get("toolchain", "unknown").lower()
     if toolchain in ["arduino", "arduino/platformio"]:
         toolchain = "platformio"
-    
-    if toolchain=="platformio":
+
+    if toolchain == "platformio":
         language = "cpp"
+    else:
+        language = platform_data.get("language", "c")
 
     platform = Platform(
         name=platform_data.get("name", "Unknown"),
@@ -107,12 +110,21 @@ def parse_firmware_json(json_str: str) -> FirmwareProject:
                 code=code
             ))
 
+    # Canonical naming: when the launcher seeded a project identity, it overrides
+    # the LLM-chosen name/slug so Git branch, Nexus path and docs all key off the
+    # same canonical name. Standalone runs (no state) keep the LLM-derived name.
+    _state = pipeline_state.load()
+    if _state.get("project_name"):
+        project.name = _state["project_name"]
+    if _state.get("project_slug"):
+        project.slug = _state["project_slug"]
+
     return project
 
 def save_project_to_disk(project: FirmwareProject, output_dir: str = "output") -> str:
     """Save all project files to disk."""
     # replace spaces with underscores to avoid path issues
-    safe_name = project.name.replace(" ", "_")
+    safe_name = project.path_name
     project_dir = os.path.join(output_dir, safe_name)
 
     # clean previous build
