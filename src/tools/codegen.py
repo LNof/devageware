@@ -54,6 +54,19 @@ def parse_firmware_json(json_str: str) -> FirmwareProject:
         board=platform_data.get("board", None)
     )
 
+    # Target-board selection: when the engineer pinned a board (device_detect ->
+    # state target_*), it overrides whatever the LLM emitted so the build matches
+    # the chosen hardware exactly. Standalone runs (no state) keep the LLM choice.
+    _state = pipeline_state.load()
+    if _state.get("target_board"):
+        platform.board = _state["target_board"]
+        platform.vendor = _state.get("target_vendor", platform.vendor)
+        platform.mcu = _state.get("target_mcu", platform.mcu)
+        platform.toolchain = _state.get("target_toolchain", platform.toolchain)
+        platform.language = _state.get("target_language", platform.language)
+        if not platform.name or platform.name == "Unknown":
+            platform.name = _state["target_board"]
+
     # set toolchain paths based on vendor
     if platform.vendor.lower() == "nordic":
         platform.toolchain_path = os.getenv("NCS_TOOLCHAIN_PATH")

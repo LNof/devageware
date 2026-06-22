@@ -15,6 +15,7 @@ from src.tools.codegen import (
 from src.tools.compiler import compile_project, image_for
 from src.tools.git import init_and_push
 from src.tools.nexus import upload_all_artifacts
+from src.tools.device_detect import select_board
 from src import pipeline_state
 
 load_dotenv()
@@ -244,6 +245,35 @@ def print_summary(project: FirmwareProject):
 def run_agent():
     """Run the firmware agent."""
     messages = [SystemMessage(content=SYSTEM_PROMPT)]
+
+    # Let the engineer pin the build-target board (detected-by-USB-ID first, then
+    # the supported menu). When chosen, it's seeded into state and injected as a
+    # hard constraint so the LLM emits the right platformio.ini and parse_firmware_json
+    # forces the platform regardless of what the model picks.
+    board = select_board()
+    if board is not None:
+        pipeline_state.update(
+            target_board=board.board,
+            target_platform=board.platform,
+            target_vendor=board.vendor,
+            target_mcu=board.mcu,
+            target_toolchain=board.toolchain,
+            target_framework=board.framework,
+            target_language=board.language,
+        )
+        messages.append(HumanMessage(content=(
+            "TARGET HARDWARE — fixed by the engineer. Build for this exact board and "
+            "do not substitute another:\n"
+            f"- Board ID: {board.board}\n"
+            f"- Platform: {board.platform}\n"
+            f"- Framework: {board.framework}\n"
+            f"- Vendor: {board.vendor}\n"
+            f"- MCU: {board.mcu}\n"
+            f"- Language: {board.language}\n"
+            "Use EXACTLY these values for `board`, `platform` and `framework` in "
+            "platformio.ini (and in the platform JSON you emit)."
+        )))
+        print(f"  ✅ Build target: {board.display} ({board.board} / {board.platform})\n")
 
     print(f"\n🤖 {WELCOME_MESSAGE}\n")
 
